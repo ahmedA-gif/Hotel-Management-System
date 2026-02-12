@@ -705,13 +705,16 @@ elif page == "Reports":
             reservations = cursor.fetchall()
 
             if reservations:
-                report_df = pd.DataFrame(reservations)
+                # Convert each row to a dictionary to ensure column names are preserved
+                data = [dict(row) for row in reservations]
+                report_df = pd.DataFrame(data)
 
-                total_revenue = safe_float(report_df['total'].sum())
-                total_room = safe_float(report_df['room_charges'].sum())
-                total_service = safe_float(report_df['service_charges'].sum())
-                paid_count = report_df[report_df['payment_status'] == 'paid'].shape[0]
-                pending_count = report_df[report_df['payment_status'] == 'pending'].shape[0]
+                # Safely access columns using .get() to avoid KeyError
+                total_revenue = safe_float(report_df['total'].sum()) if 'total' in report_df.columns else 0.0
+                total_room = safe_float(report_df['room_charges'].sum()) if 'room_charges' in report_df.columns else 0.0
+                total_service = safe_float(report_df['service_charges'].sum()) if 'service_charges' in report_df.columns else 0.0
+                paid_count = report_df[report_df['payment_status'] == 'paid'].shape[0] if 'payment_status' in report_df.columns else 0
+                pending_count = report_df[report_df['payment_status'] == 'pending'].shape[0] if 'payment_status' in report_df.columns else 0
 
                 st.markdown('<h3>Revenue Summary</h3>', unsafe_allow_html=True)
                 col1, col2, col3 = st.columns(3)
@@ -748,7 +751,7 @@ elif page == "Guest Management":
     guests = cursor.fetchall()
 
     if guests:
-        guests_df = pd.DataFrame(guests)
+        guests_df = pd.DataFrame([dict(row) for row in guests])
         st.dataframe(guests_df)
     else:
         st.info("No guests found in the database.")
