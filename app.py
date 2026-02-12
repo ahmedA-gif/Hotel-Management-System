@@ -97,7 +97,7 @@ def init_db():
         )
     ''')
 
-    # Insert default room types and services if they don't exist
+    # Insert default room types if they don't exist
     c.execute("SELECT COUNT(*) FROM RoomType")
     if c.fetchone()[0] == 0:
         c.executemany(
@@ -105,11 +105,35 @@ def init_db():
             [('Single', 100), ('Double', 150), ('Suite', 250)]
         )
 
+    # Insert default services if they don't exist
     c.execute("SELECT COUNT(*) FROM Services")
     if c.fetchone()[0] == 0:
         c.executemany(
             "INSERT INTO Services (service_name, service_price) VALUES (?, ?)",
             [('Breakfast', 15), ('Lunch', 25), ('Dinner', 35), ('Spa', 50), ('Parking', 10)]
+        )
+
+    # Insert a few sample rooms if none exist
+    c.execute("SELECT COUNT(*) FROM Room")
+    if c.fetchone()[0] == 0:
+        # Get type ids
+        c.execute("SELECT type_id FROM RoomType WHERE type_name = 'Single'")
+        single_id = c.fetchone()[0]
+        c.execute("SELECT type_id FROM RoomType WHERE type_name = 'Double'")
+        double_id = c.fetchone()[0]
+        c.execute("SELECT type_id FROM RoomType WHERE type_name = 'Suite'")
+        suite_id = c.fetchone()[0]
+
+        rooms_data = [
+            (101, single_id, 'vacant'),
+            (102, single_id, 'vacant'),
+            (201, double_id, 'vacant'),
+            (202, double_id, 'vacant'),
+            (301, suite_id, 'vacant'),
+        ]
+        c.executemany(
+            "INSERT INTO Room (room_no, type_id, room_status) VALUES (?, ?, ?)",
+            rooms_data
         )
 
     conn.commit()
@@ -145,8 +169,7 @@ def get_db_connection():
     return conn
 
 # -------------------------------------------------------------------
-#  Streamlit UI (same as before, with one important addition:
-#  after inserting a reservation, we manually insert the Billing row)
+#  Streamlit UI
 # -------------------------------------------------------------------
 st.markdown("""
     <style>
@@ -283,13 +306,16 @@ if page == "Dashboard":
 
 elif page == "Make Reservation":
     st.markdown('<h2 class="subtitle">Make Reservation</h2>', unsafe_allow_html=True)
-    
+
     cursor.execute("SELECT guest_id, guest_Fname || ' ' || guest_Lname AS guest_name FROM Guest")
     guests = {row['guest_name']: row['guest_id'] for row in cursor.fetchall()}
-    
+    if not guests:
+        st.warning("No guests found. Please add a guest first in Guest Management.")
+        st.stop()
+
     with st.form("reservation_form"):
         guest_name = st.selectbox("Guest", list(guests.keys()))
-        
+
         cursor.execute("""
             SELECT r.room_no, rt.type_name, r.room_status, rt.base_price
             FROM Room r
@@ -298,7 +324,7 @@ elif page == "Make Reservation":
             ORDER BY r.room_no
         """)
         rooms = cursor.fetchall()
-        
+
         room_options = [
             f"Room {room['room_no']} ({room['type_name']}) - {room['room_status'].capitalize()} - ${room['base_price']}/night"
             for room in rooms if room['room_status'] == 'vacant'
@@ -311,14 +337,14 @@ elif page == "Make Reservation":
             room_no = st.selectbox("Room", room_options)
             selected_room_no = int(room_no.split()[1])
             disable_submit = False
-            
+
             adults = st.number_input("Adults", min_value=1, value=1)
             children = st.number_input("Children", min_value=0, value=0)
             check_in = st.date_input("Check-in Date", value=datetime.now())
             check_out = st.date_input("Check-out Date", value=datetime.now() + timedelta(days=1))
-        
+
         submitted = st.form_submit_button("Reserve", disabled=disable_submit)
-        
+
         if submitted and not disable_submit:
             if check_out <= check_in:
                 st.error("Check-out date must be after check-in date.")
@@ -337,7 +363,7 @@ elif page == "Make Reservation":
                         )
                     """, (selected_room_no, check_in_str, check_out_str, check_in_str, check_out_str))
                     conflicts = cursor.fetchone()['conflicts']
-                    
+
                     if conflicts > 0:
                         st.error("Room is already booked for the selected dates.")
                     else:
@@ -346,9 +372,9 @@ elif page == "Make Reservation":
                             INSERT INTO Reservation (reservation_date, guest_id, room_no, check_in, check_out, adults, children)
                             VALUES (DATE('now'), ?, ?, ?, ?, ?, ?)
                         """, (guests[guest_name], selected_room_no, check_in_str, check_out_str, adults, children))
-                        
+
                         reservation_id = cursor.lastrowid
-                        
+
                         # ---- MANUALLY CREATE BILLING RECORD ----
                         # Get base price of the room
                         cursor.execute("""
@@ -358,29 +384,28 @@ elif page == "Make Reservation":
                             WHERE r.room_no = ?
                         """, (selected_room_no,))
                         base_price = safe_float(cursor.fetchone()['base_price'])
-                        
+
                         # Calculate number of nights
                         nights = (check_out - check_in).days
                         room_charges = base_price * nights
-                        
+
                         # Insert into Billing (total = room_charges initially, service_charges = 0)
                         cursor.execute("""
                             INSERT INTO Billing (reservation_id, room_charges, service_charges, total)
                             VALUES (?, ?, 0, ?)
                         """, (reservation_id, room_charges, room_charges))
-                        # -----------------------------------------
-                        
+
+                        # Update room status to occupied
+                        cursor.execute("UPDATE Room SET room_status = 'occupied' WHERE room_no = ?", (selected_room_no,))
+
                         st.success(f"Reservation successful! Room {selected_room_no} has been booked. Reservation ID: {reservation_id}")
                         st.rerun()
                 except sqlite3.Error as e:
                     st.error(f"Database error: {e}")
 
-# ---------- All other pages (Add Services, Delete Services, Check Out, Delete Reservation, Reports, Guest Management) remain exactly as in the previous conversion ----------
-# (I will copy them below for completeness, but they are unchanged except for the connection usage)
-
 elif page == "Add Services":
     st.markdown('<h2 class="subtitle">Add Services to Reservation</h2>', unsafe_allow_html=True)
-    
+
     cursor.execute("""
         SELECT r.reservation_id, g.guest_Fname, g.guest_Lname, rm.room_no, rt.type_name
         FROM Reservation r
@@ -390,7 +415,7 @@ elif page == "Add Services":
         WHERE r.check_out >= DATE('now')
     """)
     reservations = cursor.fetchall()
-    
+
     if not reservations:
         st.warning("No active reservations found.")
     else:
@@ -398,37 +423,37 @@ elif page == "Add Services":
             f"Reservation #{res['reservation_id']} - {res['guest_Fname']} {res['guest_Lname']} (Room {res['room_no']} - {res['type_name']})": res['reservation_id']
             for res in reservations
         }
-        
+
         with st.form("add_services"):
             reservation_display = st.selectbox("Select Reservation", list(reservation_options.keys()))
             reservation_id = reservation_options[reservation_display]
-            
+
             cursor.execute("SELECT service_id, service_name, service_price FROM Services")
             services = cursor.fetchall()
             service_options = {
                 f"{service['service_name']} (${service['service_price']})": service['service_id']
                 for service in services
             }
-            
+
             if not services:
                 st.warning("No services available.")
             else:
                 service_display = st.selectbox("Select Service", list(service_options.keys()))
                 service_id = service_options[service_display]
-                
+
                 quantity = st.number_input("Quantity", min_value=1, value=1)
                 service_date = st.date_input("Service Date", value=datetime.now())
                 service_date_str = service_date.strftime('%Y-%m-%d')
-                
+
                 submit_service = st.form_submit_button("Add Service")
-                
+
                 if submit_service:
                     try:
                         cursor.execute("""
                             INSERT INTO ReservationServices (reservation_id, service_id, quantity, service_date)
                             VALUES (?, ?, ?, ?)
                         """, (reservation_id, service_id, quantity, service_date_str))
-                        
+
                         cursor.execute("""
                             SELECT SUM(rs.quantity * s.service_price) AS new_service_charges
                             FROM ReservationServices rs
@@ -436,14 +461,14 @@ elif page == "Add Services":
                             WHERE rs.reservation_id = ?
                         """, (reservation_id,))
                         new_service_charges = safe_float(cursor.fetchone()['new_service_charges'] or 0)
-                        
+
                         cursor.execute("""
                             UPDATE Billing
                             SET service_charges = ?,
                                 total = room_charges + ?
                             WHERE reservation_id = ?
                         """, (new_service_charges, new_service_charges, reservation_id))
-                        
+
                         st.success(f"Added {quantity} x {service_display.split(' (')[0]} to reservation #{reservation_id}")
                         st.rerun()
                     except sqlite3.Error as e:
@@ -451,7 +476,7 @@ elif page == "Add Services":
 
 elif page == "Delete Services":
     st.markdown('<h2 class="subtitle">Delete Services from Reservation</h2>', unsafe_allow_html=True)
-    
+
     cursor.execute("""
         SELECT r.reservation_id, g.guest_Fname, g.guest_Lname, rm.room_no, rt.type_name
         FROM Reservation r
@@ -462,7 +487,7 @@ elif page == "Delete Services":
         AND EXISTS (SELECT 1 FROM ReservationServices rs WHERE rs.reservation_id = r.reservation_id)
     """)
     reservations = cursor.fetchall()
-    
+
     if not reservations:
         st.warning("No active reservations with services found.")
     else:
@@ -470,11 +495,11 @@ elif page == "Delete Services":
             f"Reservation #{res['reservation_id']} - {res['guest_Fname']} {res['guest_Lname']} (Room {res['room_no']} - {res['type_name']})": res['reservation_id']
             for res in reservations
         }
-        
+
         with st.form("delete_services_form"):
             reservation_display = st.selectbox("Select Reservation", list(reservation_options.keys()))
             reservation_id = reservation_options[reservation_display]
-            
+
             cursor.execute("""
                 SELECT rs.res_service_id, s.service_name, rs.quantity, rs.service_date
                 FROM ReservationServices rs
@@ -482,20 +507,20 @@ elif page == "Delete Services":
                 WHERE rs.reservation_id = ?
             """, (reservation_id,))
             services = cursor.fetchall()
-            
+
             if not services:
                 st.warning("No services associated with this reservation.")
             else:
                 service_options = {f"Service ID {service['res_service_id']} - {service['service_name']} (Qty: {service['quantity']}, Date: {service['service_date']})": service['res_service_id'] for service in services}
                 service_to_delete = st.selectbox("Select Service to Delete", list(service_options.keys()))
                 res_service_id = service_options[service_to_delete]
-                
+
                 submit_delete = st.form_submit_button("Delete Service")
-                
+
                 if submit_delete:
                     try:
                         cursor.execute("DELETE FROM ReservationServices WHERE res_service_id = ?", (res_service_id,))
-                        
+
                         cursor.execute("""
                             SELECT SUM(rs.quantity * s.service_price) AS new_service_charges
                             FROM ReservationServices rs
@@ -503,14 +528,14 @@ elif page == "Delete Services":
                             WHERE rs.reservation_id = ?
                         """, (reservation_id,))
                         new_service_charges = safe_float(cursor.fetchone()['new_service_charges'] or 0)
-                        
+
                         cursor.execute("""
                             UPDATE Billing
                             SET service_charges = ?,
                                 total = room_charges + ?
                             WHERE reservation_id = ?
                         """, (new_service_charges, new_service_charges, reservation_id))
-                        
+
                         st.success(f"Service with ID {res_service_id} deleted from reservation #{reservation_id}")
                         st.rerun()
                     except sqlite3.Error as e:
@@ -518,7 +543,7 @@ elif page == "Delete Services":
 
 elif page == "Check Out":
     st.markdown('<h2 class="subtitle">Process Check Out</h2>', unsafe_allow_html=True)
-    
+
     cursor.execute("""
         SELECT r.reservation_id, r.room_no, g.guest_Fname, g.guest_Lname, 
                rt.type_name, b.total AS estimated_total, b.payment_status
@@ -531,7 +556,7 @@ elif page == "Check Out":
         AND b.payment_status = 'pending'
     """)
     checkout_reservations = cursor.fetchall()
-    
+
     if not checkout_reservations:
         st.info("No reservations ready for checkout today.")
     else:
@@ -539,11 +564,11 @@ elif page == "Check Out":
             f"Reservation #{res['reservation_id']} - {res['guest_Fname']} {res['guest_Lname']} (Room {res['room_no']} - {res['type_name']}) - ${safe_float(res['estimated_total']):.2f}": res['reservation_id']
             for res in checkout_reservations
         }
-        
+
         with st.form("checkout_form"):
             reservation_display = st.selectbox("Select Reservation to Check Out", list(reservation_options.keys()))
             reservation_id = reservation_options[reservation_display]
-            
+
             cursor.execute("""
                 SELECT b.*, r.check_in, r.check_out, r.room_no, 
                        g.guest_Fname, g.guest_Lname, rt.type_name
@@ -555,22 +580,22 @@ elif page == "Check Out":
                 WHERE b.reservation_id = ?
             """, (reservation_id,))
             reservation_details = cursor.fetchone()
-            
+
             if reservation_details:
                 st.markdown(f"**Guest:** {reservation_details['guest_Fname']} {reservation_details['guest_Lname']}")
                 st.markdown(f"**Room:** {reservation_details['room_no']} ({reservation_details['type_name']})")
                 st.markdown(f"**Stay:** {reservation_details['check_in']} to {reservation_details['check_out']}")
-                
+
                 st.markdown("### Charges Summary")
                 col1, col2, col3 = st.columns(3)
                 col1.metric("Room Charges", f"${safe_float(reservation_details['room_charges']):.2f}")
                 col2.metric("Service Charges", f"${safe_float(reservation_details['service_charges']):.2f}")
                 col3.metric("Total Amount", f"${safe_float(reservation_details['total']):.2f}")
-                
+
                 payment_method = st.selectbox("Payment Method", ["Cash", "Credit Card", "Debit Card", "Bank Transfer"])
-                
+
                 submit_checkout = st.form_submit_button("Process Check Out")
-                
+
                 if submit_checkout:
                     try:
                         cursor.execute("""
@@ -580,13 +605,13 @@ elif page == "Check Out":
                                 payment_date = DATE('now')
                             WHERE reservation_id = ?
                         """, (payment_method, reservation_id))
-                        
-                        # Also update room status to vacant
+
+                        # Update room status to vacant
                         cursor.execute("""
                             UPDATE Room SET room_status = 'vacant'
                             WHERE room_no = ?
                         """, (reservation_details['room_no'],))
-                        
+
                         st.success(f"Checkout processed successfully for Room {reservation_details['room_no']}")
                         st.rerun()
                     except sqlite3.Error as e:
@@ -594,7 +619,7 @@ elif page == "Check Out":
 
 elif page == "Delete Reservation":
     st.markdown('<h2 class="subtitle">Delete Reservation</h2>', unsafe_allow_html=True)
-    
+
     cursor.execute("""
         SELECT r.reservation_id, g.guest_Fname, g.guest_Lname, 
                r.room_no, r.check_in, r.check_out, b.payment_status
@@ -605,7 +630,7 @@ elif page == "Delete Reservation":
         ORDER BY r.check_in
     """)
     active_reservations = cursor.fetchall()
-    
+
     if not active_reservations:
         st.info("No active reservations available for deletion.")
     else:
@@ -613,13 +638,13 @@ elif page == "Delete Reservation":
             f"Reservation #{res['reservation_id']} - {res['guest_Fname']} {res['guest_Lname']} (Room {res['room_no']}, {res['check_in']} to {res['check_out']})": res['reservation_id']
             for res in active_reservations
         }
-        
+
         with st.form("delete_reservation_form"):
             reservation_display = st.selectbox("Select Reservation to Delete", list(reservation_options.keys()))
             reservation_id = reservation_options[reservation_display]
-            
+
             submit_delete = st.form_submit_button("Delete Reservation")
-            
+
             if submit_delete:
                 try:
                     cursor.execute("""
@@ -628,7 +653,7 @@ elif page == "Delete Reservation":
                         WHERE reservation_id = ?
                     """, (reservation_id,))
                     service_count = cursor.fetchone()['service_count']
-                    
+
                     if service_count > 0:
                         st.error("Cannot delete reservation with associated services. Use the 'Delete Services' page to remove services first.")
                     else:
@@ -641,13 +666,13 @@ elif page == "Delete Reservation":
 
 elif page == "Reports":
     st.markdown('<h2 class="subtitle">Reports</h2>', unsafe_allow_html=True)
-    
+
     st.markdown('<div class="card">', unsafe_allow_html=True)
-    
+
     col1, col2 = st.columns(2)
     start_date = col1.date_input("Start Date", value=datetime.now() - timedelta(days=7))
     end_date = col2.date_input("End Date", value=datetime.now())
-    
+
     if start_date > end_date:
         st.error("End date must be after start date.")
     else:
@@ -676,31 +701,31 @@ elif page == "Reports":
                 WHERE r.check_in BETWEEN ? AND ?
                 ORDER BY r.check_in
             """, (start_str, end_str))
-            
+
             reservations = cursor.fetchall()
-            
+
             if reservations:
                 report_df = pd.DataFrame(reservations)
-                
+
                 total_revenue = safe_float(report_df['total'].sum())
                 total_room = safe_float(report_df['room_charges'].sum())
                 total_service = safe_float(report_df['service_charges'].sum())
                 paid_count = report_df[report_df['payment_status'] == 'paid'].shape[0]
                 pending_count = report_df[report_df['payment_status'] == 'pending'].shape[0]
-                
+
                 st.markdown('<h3>Revenue Summary</h3>', unsafe_allow_html=True)
                 col1, col2, col3 = st.columns(3)
                 col1.metric("Total Revenue", f"${total_revenue:.2f}")
                 col2.metric("Room Revenue", f"${total_room:.2f}")
                 col3.metric("Service Revenue", f"${total_service:.2f}")
-                
+
                 col1, col2 = st.columns(2)
                 col1.metric("Paid Reservations", paid_count)
                 col2.metric("Pending Reservations", pending_count)
-                
+
                 st.markdown('<h3>Reservation Details</h3>', unsafe_allow_html=True)
                 st.dataframe(report_df)
-                
+
                 csv = report_df.to_csv(index=False).encode('utf-8')
                 st.download_button(
                     "Export to CSV",
@@ -713,21 +738,22 @@ elif page == "Reports":
                 st.info("No reservations found for the selected period.")
         except sqlite3.Error as err:
             st.error(f"Error generating reports: {err}")
-    
+
     st.markdown('</div>', unsafe_allow_html=True)
 
 elif page == "Guest Management":
     st.markdown('<h2 class="subtitle">Manage Guests</h2>', unsafe_allow_html=True)
-    
+
     cursor.execute("SELECT * FROM Guest ORDER BY guest_Lname, guest_Fname")
     guests = cursor.fetchall()
-    
+
     if guests:
         guests_df = pd.DataFrame(guests)
         st.dataframe(guests_df)
     else:
         st.info("No guests found in the database.")
-    
+
+    # Add Guest Form
     with st.expander("➕ Add New Guest"):
         with st.form("add_guest"):
             col1, col2 = st.columns(2)
@@ -738,7 +764,7 @@ elif page == "Guest Management":
             age = st.number_input("Age*", min_value=18, max_value=100)
             gender = st.selectbox("Gender*", ["M", "F", "O"])
             city = st.text_input("City", max_chars=30)
-            
+
             submitted = st.form_submit_button("Add Guest")
             if submitted:
                 if not all([fname, lname, email, cnic]):
@@ -760,20 +786,21 @@ elif page == "Guest Management":
                             st.error("A guest with this CNIC or email already exists.")
                         else:
                             st.error(f"Database error: {e}")
-    
+
+    # Update Guest Form - FIXED
     with st.expander("✏️ Update Guest"):
         guest_id = st.number_input("Enter Guest ID to update", min_value=1)
         if st.button("Find Guest"):
             cursor.execute("SELECT * FROM Guest WHERE guest_id = ?", (guest_id,))
-            guest = cursor.fetchone()
-            
-            if guest:
-                st.session_state['edit_guest'] = guest
-                st.success(f"Found guest: {guest['guest_Fname']} {guest['guest_Lname']}")
+            guest_row = cursor.fetchone()
+            if guest_row:
+                # Convert to dict for easy .get() usage
+                st.session_state['edit_guest'] = dict(guest_row)
+                st.success(f"Found guest: {guest_row['guest_Fname']} {guest_row['guest_Lname']}")
             else:
                 st.error("Guest not found.")
                 st.session_state['edit_guest'] = None
-        
+
         if 'edit_guest' in st.session_state and st.session_state['edit_guest']:
             guest = st.session_state['edit_guest']
             with st.form("update_guest"):
@@ -783,7 +810,8 @@ elif page == "Guest Management":
                 new_email = st.text_input("Email", value=guest['guest_email'])
                 new_cnic = st.text_input("CNIC", value=guest['CNIC'])
                 new_city = st.text_input("City", value=guest.get('City', ''))
-                
+
+                # SUBMIT BUTTON - was missing
                 submitted = st.form_submit_button("Update Guest")
                 if submitted:
                     if not all([new_fname, new_lname, new_email, new_cnic]):
@@ -802,7 +830,8 @@ elif page == "Guest Management":
                             st.rerun()
                         except sqlite3.Error as e:
                             st.error(f"Database error: {e}")
-    
+
+    # Delete Guest
     with st.expander("🗑️ Delete Guest"):
         del_id = st.number_input("Enter Guest ID to delete", min_value=1)
         if st.button("Delete Guest"):
@@ -813,7 +842,7 @@ elif page == "Guest Management":
                     WHERE guest_id = ? AND check_out >= DATE('now')
                 """, (del_id,))
                 active_res = cursor.fetchone()['active_reservations']
-                
+
                 if active_res > 0:
                     st.error("Cannot delete guest with active reservations.")
                 else:
