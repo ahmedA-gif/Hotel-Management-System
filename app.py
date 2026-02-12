@@ -31,6 +31,7 @@ def get_db_connection():
         use_pure=True
     )
 # INITIALIZATION LOGIC
+# INITIALIZATION LOGIC
 try:
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
@@ -39,20 +40,22 @@ try:
     if not cursor.fetchone():
         st.warning("Creating tables...")
         with open('final.sql', 'r') as f:
-            # Only execute CREATE TABLE and INSERT statements
-            # This skips TRIGGERS and PROCEDURES which crash the python parser
             sql_content = f.read()
+            # Split by semicolon
             sql_commands = sql_content.split(';')
             
             for command in sql_commands:
                 clean_cmd = command.strip()
-                # Only run simple table setups
+                # STICK TO TABLES ONLY: skip Triggers, Procedures, and Delimiters
                 if clean_cmd.upper().startswith(('CREATE TABLE', 'INSERT INTO')):
-                    try:
-                        cursor.execute(clean_cmd)
-                    except Exception as e:
-                        st.error(f"Error on: {clean_cmd[:50]}... -> {e}")
-        st.success("Tables created! Please refresh.")
+                    # Check if it's a trigger disguised as a string
+                    if "TRIGGER" not in clean_cmd.upper():
+                        try:
+                            cursor.execute(clean_cmd)
+                        except Exception as e:
+                            st.error(f"Error on: {clean_cmd[:50]}... -> {e}")
+                            
+        st.success("Tables created! Please refresh the page.")
         st.stop()
 except Exception as e:
     st.error(f"Connection Error: {e}")
