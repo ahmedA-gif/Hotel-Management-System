@@ -30,9 +30,10 @@ def get_db_connection():
         ssl_verify_cert=False, 
         use_pure=True
     )
-conn = None
-cursor = None
 try:
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+    
     # Check if a table exists
     cursor.execute("SHOW TABLES LIKE 'Room'")
     result = cursor.fetchone()
@@ -41,13 +42,20 @@ try:
         st.warning("Database tables not found. Initializing...")
         # Read and execute your SQL file
         with open('final.sql', 'r') as f:
-            sql_commands = f.read().split(';')
+            # We split by semicolon, but TiDB Cloud doesn't like DELIMITER commands
+            # This filter removes DELIMITER lines from your SQL file dynamically
+            sql_commands = [cmd for cmd in f.read().split(';') if 'DELIMITER' not in cmd.upper()]
             for command in sql_commands:
                 if command.strip():
-                    cursor.execute(command)
+                    try:
+                        cursor.execute(command)
+                    except Exception as e:
+                        st.error(f"Failed to run command: {command[:50]}... Error: {e}")
         st.success("Database initialized! Please refresh.")
+        st.stop() # Stop and wait for user to refresh
 except Exception as e:
-    st.error(f"Error checking/creating tables: {e}")
+    st.error(f"Connection Error: {e}")
+    st.stop()
 
 # Enhanced Custom CSS
 st.markdown("""
