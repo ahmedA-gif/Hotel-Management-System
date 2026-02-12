@@ -30,6 +30,8 @@ def get_db_connection():
         ssl_verify_cert=False, 
         use_pure=True
     )
+conn = None
+cursor = None
 try:
     # Check if a table exists
     cursor.execute("SHOW TABLES LIKE 'Room'")
