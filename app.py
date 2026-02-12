@@ -30,29 +30,30 @@ def get_db_connection():
         ssl_verify_cert=False, 
         use_pure=True
     )
+# INITIALIZATION LOGIC
 try:
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
     
-    # Check if a table exists
     cursor.execute("SHOW TABLES LIKE 'Room'")
-    result = cursor.fetchone()
-    
-    if not result:
-        st.warning("Database tables not found. Initializing...")
-        # Read and execute your SQL file
+    if not cursor.fetchone():
+        st.warning("Creating tables...")
         with open('final.sql', 'r') as f:
-            # We split by semicolon, but TiDB Cloud doesn't like DELIMITER commands
-            # This filter removes DELIMITER lines from your SQL file dynamically
-            sql_commands = [cmd for cmd in f.read().split(';') if 'DELIMITER' not in cmd.upper()]
+            # Only execute CREATE TABLE and INSERT statements
+            # This skips TRIGGERS and PROCEDURES which crash the python parser
+            sql_content = f.read()
+            sql_commands = sql_content.split(';')
+            
             for command in sql_commands:
-                if command.strip():
+                clean_cmd = command.strip()
+                # Only run simple table setups
+                if clean_cmd.upper().startswith(('CREATE TABLE', 'INSERT INTO')):
                     try:
-                        cursor.execute(command)
+                        cursor.execute(clean_cmd)
                     except Exception as e:
-                        st.error(f"Failed to run command: {command[:50]}... Error: {e}")
-        st.success("Database initialized! Please refresh.")
-        st.stop() # Stop and wait for user to refresh
+                        st.error(f"Error on: {clean_cmd[:50]}... -> {e}")
+        st.success("Tables created! Please refresh.")
+        st.stop()
 except Exception as e:
     st.error(f"Connection Error: {e}")
     st.stop()
