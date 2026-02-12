@@ -109,7 +109,23 @@ st.markdown("""
 
 # App title
 st.markdown('<h1 class="title">Hotel Management System</h1>', unsafe_allow_html=True)
-
+# After your cursor = conn.cursor() line:
+try:
+    # Check if a table exists
+    cursor.execute("SHOW TABLES LIKE 'Room'")
+    result = cursor.fetchone()
+    
+    if not result:
+        st.warning("Database tables not found. Initializing...")
+        # Read and execute your SQL file
+        with open('final.sql', 'r') as f:
+            sql_commands = f.read().split(';')
+            for command in sql_commands:
+                if command.strip():
+                    cursor.execute(command)
+        st.success("Database initialized! Please refresh.")
+except Exception as e:
+    st.error(f"Error checking/creating tables: {e}")
 # Sidebar navigation
 st.sidebar.title("Navigation")
 page = st.sidebar.radio("Select Page", [
